@@ -1,37 +1,38 @@
-static ssize_t portio_type_show(struct kobject *kobj, struct attribute *attr,
-			     char *buf)
-{
-	struct uio_portio *portio = to_portio(kobj);
-	struct uio_port *port = portio->port;
-	struct portio_sysfs_entry *entry;
+	int vhost_scsi_make_tpg(struct se_wwn *wwn,
+	struct config_group *group,
+	const char *name)
+	{
+	struct vhost_scsi_tport *tport = container_of(wwn,
+	struct vhost_scsi_tport, tport_wwn);
 
-	entry = container_of(attr, struct portio_sysfs_entry, attr);
+	struct vhost_scsi_tpg *tpg;
+		unsigned long tpgt;
+	int ret;
 
-	if (!entry->show)
-		return -EIO;
+	if (strstr(name, "tpgt_") != name)
+	return ERR_PTR(-EINVAL);
+		if (kstrtoul(name + 5, 10, &tpgt) || tpgt > UINT_MAX)
+	return ERR_PTR(-EINVAL);
 
-	return entry->show(port, buf);
-}
-
-
-
-static void arcmsr_hbaB_postqueue_isr(struct AdapterControlBlock *acb)
-{
-	uint32_t index;
-	uint32_t flag_ccb;
-	struct MessageUnit_B *reg = acb->pmuB;
-	struct ARCMSR_CDB *pARCMSR_CDB;
-	struct CommandControlBlock *pCCB;
-	bool error;
-	index = reg->doneq_index;
-	while ((flag_ccb = reg->done_qbuffer[index]) != 0) {
-		reg->done_qbuffer[index] = 0;
-		pARCMSR_CDB = (struct ARCMSR_CDB *)(acb->vir2phy_offset+(flag_ccb << 5));
-		pCCB = container_of(pARCMSR_CDB, struct CommandControlBlock, arcmsr_cdb);
-		error = (flag_ccb & ARCMSR_CCBREPLY_FLAG_ERROR_MODE0) ? true : false;
-		arcmsr_drain_donequeue(acb, pCCB, error);
-		index++;
-		index %= ARCMSR_MAX_HBB_POSTQUEUE;
-		reg->doneq_index = index;
+	tpg = kzalloc(sizeof(struct vhost_scsi_tpg), GFP_KERNEL);
+	if (!tpg) {
+	pr_err("Unable to allocate struct vhost_scsi_tpg");
+	return ERR_PTR(-ENOMEM);
 	}
-}
+	mutex_init(&tpg->tv_tpg_mutex);
+	INIT_LIST_HEAD(&tpg->tv_tpg_list);
+	tpg->tport = tport;
+	tpg->tport_tpgt = tpgt;
+
+	ret = core_tpg_register(&vhost_scsi_fabric_configfs->tf_ops, wwn,
+	&tpg->se_tpg, tpg, TRANSPORT_TPG_TYPE_NORMAL);
+	if (ret < 0) {
+	kfree(tpg);
+	return NULL;
+	}
+	mutex_lock(&vhost_scsi_mutex);
+	list_add_tail(&tpg->tv_tpg_list, &vhost_scsi_list);
+	mutex_unlock(&vhost_scsi_mutex);
+
+	return &tpg->se_tpg;
+	}
